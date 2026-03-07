@@ -2,76 +2,49 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 from scipy.spatial.distance import sqeuclidean
-import matplotlib.pyplot as plt
 
-# --- CONFIGURATION & UNIVERSE ---
-# Top Nifty 100 stocks for high liquidity (Representative list)
-tickers = [
-    'RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'ICICIBANK.NS', 'INFY.NS', 'BHARTIARTL.NS',
-    'SBIN.NS', 'LICI.NS', 'ITC.NS', 'HINDUNILVR.NS', 'LT.NS', 'BAJFINANCE.NS',
-    'MARUTI.NS', 'SUNPHARMA.NS', 'ADANIENT.NS', 'TATAMOTORS.NS', 'AXISBANK.NS',
-    'ONGC.NS', 'NTPC.NS', 'KOTAKBANK.NS', 'TATASTEEL.NS', 'M&M.NS', 'JSWSTEEL.NS'
-]
+# 1. Define Universe (Ensure these tickers are active on NSE)
+main_industry = ['TATAMOTORS.NS', 'MARUTI.NS', 'M&M.NS']
+related_industry = ['TATASTEEL.NS', 'JSWSTEEL.NS', 'SAIL.NS']
+tickers = list(set(main_industry + related_industry))
 
-# 1. FETCH DATA (12M Formation + 6M Trading)
-print("Fetching Nifty 100 data...")
-df = yf.download(tickers, period="2y")['Adj Close'].dropna(axis=1)
-formation_df = df.iloc[-504:-126]  # 12-month formation period
-trading_df = df.iloc[-126:]        # 6-month trading period
+# 2. Fetch Data with Error Handling
+print("Fetching data...")
+data = yf.download(tickers, period="2y")['Adj Close']
 
-# 2. NORMALIZATION & PAIRING
-def normalize(data): return data / data.iloc[0]
+# Fix for IndexError: fill minor gaps instead of dropping everything
+data = data.ffill().dropna(axis=1) 
 
-norm_form = normalize(formation_df)
-pairs_ssd = []
+if data.empty:
+    print("Error: No data found for the specified tickers.")
+else:
+    formation_df = data.iloc[-504:-126] 
+    trading_df = data.iloc[-126:]
 
-# Calculate SSD for all possible combinations
-cols = norm_form.columns
-for i in range(len(cols)):
-    for j in range(i + 1, len(cols)):
-        s1, s2 = cols[i], cols[j]
-        ssd = sqeuclidean(norm_form[s1], norm_form[s2])
-        pairs_ssd.append((s1, s2, ssd))
+    def normalize(df): return df / df.iloc[0]
+    norm_form = normalize(formation_df)
+    
+    pairs_ssd = []
+    # Ensure we only iterate over columns that actually exist in the fetched data
+    valid_main = [s for s in main_industry if s in norm_form.columns]
+    valid_related = [s for s in related_industry if s in norm_form.columns]
 
-# Pick the pair with the smallest historical distance
-s1, s2, min_ssd = sorted(pairs_ssd, key=lambda x: x[2])[0]
-print(f"\nTop Pair Identified: {s1} & {s2} (SSD: {min_ssd:.4f})")
+    for s1 in valid_main:
+        for s2 in valid_related:
+            ssd = sqeuclidean(norm_form[s1], norm_form[s2])
+            pairs_ssd.append((s1, s2, ssd))
 
-# 3. TRADING LOGIC
-# Calculate historical standard deviation of the spread
-hist_spread = normalize(formation_df[s1]) - normalize(formation_df[s2])
-hist_std = hist_spread.std()
-
-# Trading period data
-norm_trade = normalize(trading_df[[s1, s2]])
-spread = norm_trade[s1] - norm_trade[s2]
-threshold = 2 * hist_std
-
-# SIGNAL SUMMARY LOGIC
-last_spread = spread.iloc[-1]
-prev_spread = spread.iloc[-2]
-status = "NEUTRAL"
-instruction = "Maintain watchlist; spread within normal range."
-
-# RULE 1: Wait One Day Rule (Divergence > 2 Sigma)
-if abs(last_spread) > threshold:
-    status = "DIVERGENCE DETECTED"
-    instruction = "WAIT ONE DAY: Do not enter today. Confirm the gap persists to avoid bid-ask bounce."
-
-# RULE 2: Convergence Exit (Zero Crossing)
-elif (prev_spread > 0 and last_spread <= 0) or (prev_spread < 0 and last_spread >= 0):
-    status = "CONVERGENCE REACHED"
-    instruction = "EXIT NOW: Normalized prices have crossed. Close both positions for profit."
-
-# RULE 3: Stop Loss (6-Month Time Limit or 4-Sigma Distance)
-elif abs(last_spread) > (threshold * 2):
-    status = "STOP LOSS TRIGGERED"
-    instruction = "EXIT IMMEDIATELY: Structural break detected (4-Sigma divergence)."
-
-# --- OUTPUT ---
-print(f"{'='*50}")
-print(f"PAIR: {s1} vs {s2}")
-print(f"CURRENT SPREAD: {last_spread:.4f} (Limit: {threshold:.4f})")
-print(f"STATUS: {status}")
-print(f"ACTION: {instruction}")
-print(f"{'='*50}")
+    # 3. Check if pairs_ssd is empty before sorting to prevent IndexError
+    if not pairs_ssd:
+        print("Error: No valid pairs could be formed. Check ticker symbols.")
+    else:
+        # Now safe to sort
+        s1, s2, min_ssd = sorted(pairs_ssd, key=lambda x: x[2])[0]
+        
+        # Calculate Signals
+        hist_std = (normalize(formation_df[s1]) - normalize(formation_df[s2])).std()
+        current_spread = (trading_df[s1].iloc[-1]/trading_df[s1].iloc[0]) - \
+                         (trading_df[s2].iloc[-1]/trading_df[s2].iloc[0])
+        
+        print(f"\nTop Pair: {s1} & {s2}")
+        print(f"Status: {'DIVERGENCE' if abs(current_spread) > 2*hist_std else 'NEUTRAL'}")
