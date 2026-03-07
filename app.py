@@ -23,7 +23,7 @@ TICKERS = list(set(AUTO_SECTOR + STEEL_SECTOR))
 # --- 2. DATA ENGINE ---
 @st.cache_data
 def get_clean_data(symbols):
-    # auto_adjust=True handles 'Close' as the adjusted price
+    # auto_adjust=True handles 'Close' as the adjusted price in newer yfinance versions
     raw = yf.download(symbols, period="2y", progress=False)
     if isinstance(raw.columns, pd.MultiIndex):
         data = raw['Close']
@@ -38,17 +38,48 @@ if not df.empty:
     formation_df = df.iloc[-504:-126] # 12 months formation
     trading_df = df.iloc[-126:]      # 6 months trading
     
-    norm_form = formation_df / formation_df.iloc[0]
-    norm_trade = trading_df / trading_df.iloc[0]
+    # Normalization Function
+    def normalize_df(data_frame):
+        return data_frame / data_frame.iloc[0]
+
+    norm_form = normalize_df(formation_df)
+    norm_trade = normalize_df(trading_df)
     
     all_pairs_results = []
     
-    # Process all combinations
+    # Process all combinations between sectors
     for s1 in AUTO_SECTOR:
         for s2 in STEEL_SECTOR:
-            if s1 in df.columns and s2 in df.columns:
+            if s1 in norm_form.columns and s2 in norm_form.columns:
                 # Minimum Distance (SSD)
                 ssd = sqeuclidean(norm_form[s1], norm_form[s2])
                 
                 # Historical Spread Statistics
-                hist_spread = norm_form[s1] - norm_
+                hist_spread = norm_form[s1] - norm_form[s2]
+                h_std = hist_spread.std()
+                threshold = 2 * h_std
+                
+                # Current Trading Spread
+                t_series = norm_trade[s1] - norm_trade[s2]
+                current_val = t_series.iloc[-1]
+                
+                # Determine Buy/Sell Action
+                if current_val > threshold:
+                    action = f"SELL {s1} / BUY {s2}"
+                    status = "🚨 DIVERGED (High)"
+                elif current_val < -threshold:
+                    action = f"BUY {s1} / SELL {s2}"
+                    status = "🚨 DIVERGED (Low)"
+                elif abs(current_val) < (0.1 * h_std):
+                    action = "✅ EXIT (Convergence)"
+                    status = "CONVERGED"
+                else:
+                    action = "Wait/Neutral"
+                    status = "STABLE"
+
+                all_pairs_results.append({
+                    'PairName': f"{s1} vs {s2}",
+                    'SSD': ssd,
+                    'Spread': round(current_val, 4),
+                    'Threshold': round(threshold, 4),
+                    'Action': action,
