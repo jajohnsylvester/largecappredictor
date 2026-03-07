@@ -74,12 +74,75 @@ if not df.empty:
                     action = "✅ EXIT (Convergence)"
                     status = "CONVERGED"
                 else:
-                    action = "Wait/Neutral"
+                    action = "Neutral"
                     status = "STABLE"
 
+                # Dictionary append fixed with proper closing
                 all_pairs_results.append({
                     'PairName': f"{s1} vs {s2}",
                     'SSD': ssd,
                     'Spread': round(current_val, 4),
                     'Threshold': round(threshold, 4),
                     'Action': action,
+                    'Status': status,
+                    'S1': s1, 'S2': s2, 'limit': threshold,
+                    'series': t_series
+                })
+
+    # --- 4. SIDEBAR SELECTION ---
+    if all_pairs_results:
+        sorted_pairs = sorted(all_pairs_results, key=lambda x: x['SSD'])
+        pair_names = [p['PairName'] for p in sorted_pairs]
+        
+        st.sidebar.header("Pair Selection")
+        selected_name = st.sidebar.selectbox("Select a Pair to Analyze", options=pair_names)
+        
+        # Retrieve data for the selected pair
+        selected_pair = next(p for p in sorted_pairs if p['PairName'] == selected_name)
+
+        # --- 5. VISUALIZATION ---
+        st.subheader(f"📈 Chart: {selected_pair['PairName']}")
+        
+        fig = go.Figure()
+        s_data = selected_pair['series']
+        lim = selected_pair['limit']
+        
+        fig.add_trace(go.Scatter(x=s_data.index, y=s_data, name="Spread", line=dict(color='#00CC96')))
+        
+        # Highlight Divergence Points
+        div_points = s_data[abs(s_data) > lim]
+        if not div_points.empty:
+            fig.add_trace(go.Scatter(x=div_points.index, y=div_points, mode='markers', 
+                                     marker=dict(color='yellow', size=10, symbol='triangle-up'), 
+                                     name='Divergence'))
+
+        fig.add_hline(y=lim, line_dash="dash", line_color="red", annotation_text="+2σ Boundary")
+        fig.add_hline(y=-lim, line_dash="dash", line_color="red", annotation_text="-2σ Boundary")
+        fig.add_hline(y=0, line_color="white", opacity=0.3)
+        
+        fig.update_layout(template="plotly_dark", height=500, xaxis_title="Trading Days", yaxis_title="Normalized Price Difference")
+        st.plotly_chart(fig, use_container_width=True)
+
+        # --- 6. SIGNAL DISPLAY & SUMMARY ---
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown(f"### Current Status: {selected_pair['Status']}")
+            st.info(f"**Action:** {selected_pair['Action']}")
+        
+        with c2:
+            st.write(f"**Historical Distance (SSD):** {selected_pair['SSD']:.6f}")
+            st.write(f"**Current Spread:** {selected_pair['Spread']}")
+            st.write(f"**Target Threshold:** ±{selected_pair['Threshold']}")
+
+        # Table of Active Signals
+        st.subheader("📋 Active Signals Across NSE")
+        active_df = pd.DataFrame([p for p in sorted_pairs if p['Status'] != "STABLE"])
+        if not active_df.empty:
+            st.dataframe(active_df[['PairName', 'Action', 'Spread', 'Status']], hide_index=True, use_container_width=True)
+        else:
+            st.success("No active divergences detected in the monitored sectors.")
+    else:
+        st.error("No valid pairs could be formed with the available data.")
+
+else:
+    st.warning("Fetching market data... please wait.")
