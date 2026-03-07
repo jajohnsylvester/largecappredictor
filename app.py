@@ -2,37 +2,38 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 from scipy.spatial.distance import sqeuclidean
-import matplotlib.pyplot as plt
 
-# --- 1. CONFIGURATION & UPDATED TICKERS ---
-# We have replaced TATAMOTORS with the new post-demerger tickers: TMPV and TMCV
-main_industry = ['TMPV.NS', 'TMCV.NS', 'MARUTI.NS', 'M&M.NS'] # Automobile
-related_industry = ['TATASTEEL.NS', 'JSWSTEEL.NS', 'SAIL.NS']  # Steel
+# 1. Configuration with 2026 Tickers
+# Replacing TATAMOTORS.NS with post-demerger entities TMPV and TMCV
+main_industry = ['TMPV.NS', 'TMCV.NS', 'MARUTI.NS', 'M&M.NS']
+related_industry = ['TATASTEEL.NS', 'JSWSTEEL.NS', 'SAIL.NS']
 tickers = list(set(main_industry + related_industry))
 
-# --- 2. DATA FETCHING ---
-print("Fetching latest Indian market data...")
-# Fetching 2 years of data to cover 12m formation + 6m trading + buffer
-data = yf.download(tickers, period="2y")['Adj Close']
+# 2. Fetch Data (Fix for KeyError and MultiIndex)
+print("Fetching March 2026 data from NSE...")
+# auto_adjust=True (default) makes 'Close' the adjusted price and removes 'Adj Close'
+raw_data = yf.download(tickers, period="2y", progress=False)
 
-# Data Cleaning: forward fill minor gaps and drop stocks with no data
-data = data.ffill().dropna(axis=1)
+# Select 'Close' column (which is now adjusted)
+# yfinance multi-ticker download results in columns: (PriceType, Ticker)
+if 'Close' in raw_data.columns.get_level_values(0):
+    data = raw_data['Close'].ffill().dropna(axis=1)
+else:
+    # Fallback for single ticker or different structure
+    data = raw_data.ffill().dropna(axis=1)
 
 if data.empty:
-    print("Error: No data found. Please check your internet connection or tickers.")
+    print("Error: No data found. Verify your internet and ticker symbols.")
 else:
-    # Split into Formation (12 months) and Trading (latest 6 months)
+    # 3. Formation and Trading Splits
     formation_df = data.iloc[-504:-126] 
     trading_df = data.iloc[-126:]
 
-    # Normalization Function (Paper Rule: Start at 1.0)
     def normalize(df): return df / df.iloc[0]
-    
     norm_form = normalize(formation_df)
     
-    # --- 3. PAIRING LOGIC (MINIMUM DISTANCE) ---
+    # 4. Find Best Intersectoral Pair
     pairs_ssd = []
-    # Ensure we only iterate over tickers that successfully downloaded
     valid_main = [s for s in main_industry if s in norm_form.columns]
     valid_related = [s for s in related_industry if s in norm_form.columns]
 
@@ -41,42 +42,38 @@ else:
             ssd = sqeuclidean(norm_form[s1], norm_form[s2])
             pairs_ssd.append((s1, s2, ssd))
 
-    # Error Check: Prevent IndexError if no pairs are found
     if not pairs_ssd:
-        print("Error: Could not form any pairs. Check if tickers are active.")
+        print("Error: No valid pairs formed. Ensure tickers are correct.")
     else:
-        # Sort by SSD and pick the best pair
+        # Sort and Pick Best
         s1, s2, min_ssd = sorted(pairs_ssd, key=lambda x: x[2])[0]
         
-        # --- 4. SIGNAL CALCULATION ---
-        # Historical Std Dev of the spread during formation
+        # 5. Signal Calculation
         hist_spread = normalize(formation_df[s1]) - normalize(formation_df[s2])
         hist_std = hist_spread.std()
         
-        # Current spread in the trading period
         norm_trade = normalize(trading_df[[s1, s2]])
         current_spread = norm_trade[s1].iloc[-1] - norm_trade[s2].iloc[-1]
         prev_spread = norm_trade[s1].iloc[-2] - norm_trade[s2].iloc[-2]
         threshold = 2 * hist_std
 
-        # --- 5. RULE-BASED SUMMARY ---
+        # 6. Rule-Based Summary
         status = "NEUTRAL"
-        instruction = "Monitor; spread is within the 2-Sigma range."
+        instruction = "Spread within 2-Sigma range. Maintain monitor."
 
         if abs(current_spread) > threshold:
             status = "DIVERGENCE DETECTED"
             instruction = "WAIT ONE DAY: Confirm the gap persists to avoid bid-ask bounce."
         elif (prev_spread > 0 and current_spread <= 0) or (prev_spread < 0 and current_spread >= 0):
-            status = "CONVERGENCE REACHED"
-            instruction = "EXIT POSITION: Prices have crossed. Realize profits now."
+            status = "CONVERGENCE"
+            instruction = "EXIT POSITION: Prices have crossed. Realize profit/loss now."
         elif abs(current_spread) > (threshold * 2):
             status = "STOP LOSS"
-            instruction = "EXIT IMMEDIATELY: Spread has exceeded 4-Sigma; fundamental link broken."
+            instruction = "EXIT IMMEDIATELY: Spread exceeded 4-Sigma. Link broken."
 
         print(f"\n{'='*50}")
-        print(f"LATEST TOP PAIR: {s1} & {s2}")
-        print(f"SSD (Distance): {min_ssd:.6f}")
-        print(f"Current Spread: {current_spread:.4f} (Limit: {threshold:.4f})")
+        print(f"TOP PAIR: {s1} & {s2}")
         print(f"STATUS: {status}")
         print(f"ACTION: {instruction}")
+        print(f"Current Spread: {current_spread:.4f} (Threshold: {threshold:.4f})")
         print(f"{'='*50}")
