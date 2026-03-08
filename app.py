@@ -18,11 +18,12 @@ ALL_TICKERS = list(set(AUTO_SECTOR + STEEL_SECTOR))
 @st.cache_data
 def get_clean_data(symbols, period="2y"):
     raw = yf.download(symbols, period=period, progress=False)
+    # yfinance 0.2.50+ returns 'Close' as the adjusted price by default
     data = raw['Close'] if isinstance(raw.columns, pd.MultiIndex) else raw
     return data.ffill().dropna(axis=1)
 
 # --- UI TABS ---
-tab_ssd, tab_coint, tab_instr = st.tabs(["🔍 SSD Discovery (Industry)", "📊 Cointegration (Statistical)", "📖 Instructions"])
+tab_ssd, tab_coint, tab_instr = st.tabs(["🔍 SSD Discovery (Industry)", "📊 Cointegration (Statistical)", "📖 How to Use"])
 
 # --- TAB 1: SSD DISTANCE MODEL ---
 with tab_ssd:
@@ -30,6 +31,7 @@ with tab_ssd:
     df_ssd = get_clean_data(ALL_TICKERS)
     
     if not df_ssd.empty:
+        # 12m Formation / 6m Trading
         form_df = df_ssd.iloc[-504:-126]
         trade_df = df_ssd.iloc[-126:]
         
@@ -44,90 +46,6 @@ with tab_ssd:
                     h_std = (norm_form[s1] - norm_form[s2]).std()
                     curr_spread = norm_trade[s1].iloc[-1] - norm_trade[s2].iloc[-1]
                     
-                    # Logic
-                    action = "Neutral"
-                    color = "gray"
-                    if curr_spread > 2*h_std: action, color = f"SELL {s1} / BUY {s2}", "red"
-                    elif curr_spread < -2*h_std: action, color = f"BUY {s1} / SELL {s2}", "green"
-                    
-                    ssd_results.append({'Pair': f"{s1} vs {s2}", 'SSD': ssd, 'Action': action, 'Color': color, 'S1': s1, 'S2': s2, 'Spread': curr_spread, 'Limit': 2*h_std})
-
-        top_pairs = sorted(ssd_results, key=lambda x: x['SSD'])
-        selected_pair = st.selectbox("Select Scanned Pair", [p['Pair'] for p in top_pairs])
-        p_data = next(p for p in top_pairs if p['Pair'] == selected_pair)
-        
-        # Charges Calculator for SSD
-        price_s1 = df_ssd[p_data['S1']].iloc[-1]
-        tax_unit = (min(20, 0.0003 * price_s1) + (0.00025 * price_s1) + (0.0000345 * price_s1)) * 1.18
-        
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Current Action", p_data['Action'])
-        c2.metric("SSD Distance", f"{p_data['SSD']:.5f}")
-        c3.metric("Est. GST/STT per Unit", f"₹{tax_unit:.2f}")
-        
-        # Plotting SSD
-        fig_ssd = go.Figure()
-        spread_ser = norm_trade[p_data['S1']] - norm_trade[p_data['S2']]
-        fig_ssd.add_trace(go.Scatter(y=spread_ser, name="Spread", line=dict(color='#00CC96')))
-        fig_ssd.add_hline(y=p_data['Limit'], line_dash="dash", line_color="red")
-        fig_ssd.add_hline(y=-p_data['Limit'], line_dash="dash", line_color="red")
-        fig_ssd.update_layout(template="plotly_dark", height=400)
-        st.plotly_chart(fig_ssd, use_container_width=True)
-
-# --- TAB 2: COINTEGRATION MODEL ---
-with tab_coint:
-    st.sidebar.header("Coint Settings")
-    t1 = st.sidebar.text_input("Stock 1 (Hedge)", "HDFCBANK.NS")
-    t2 = st.sidebar.text_input("Stock 2 (Target)", "ICICIBANK.NS")
-    z_thresh = st.sidebar.slider("Z-Score Threshold", 1.5, 3.0, 2.0)
-    
-    try:
-        df_c = get_clean_data([t1, t2])
-        S1, S2 = df_c[t1], df_c[t2]
-        
-        # Stats
-        _, pvalue, _ = coint(S1, S2)
-        model = sm.OLS(S2, sm.add_constant(S1)).fit()
-        beta = model.params[t1]
-        spread = S2 - (beta * S1)
-        z_score = (spread - spread.mean()) / spread.std()
-        
-        st.subheader(f"Statistical Arbtirage: {t1} vs {t2}")
-        curr_z = z_score.iloc[-1]
-        
-        if curr_z < -z_thresh:
-            st.success(f"🟢 ACTION: BUY {t2} (100 qty) | SELL {t1} ({round(100*beta)} qty)")
-        elif curr_z > z_thresh:
-            st.error(f"🔴 ACTION: SELL {t2} (100 qty) | BUY {t1} ({round(100*beta)} qty)")
-        else:
-            st.info("⌛ SIGNAL: NEUTRAL")
-            
-        fig_z = go.Figure()
-        fig_z.add_trace(go.Scatter(y=z_score, name="Z-Score", line=dict(color='orange')))
-        fig_z.add_hline(y=z_thresh, line_dash="dot", line_color="red")
-        fig_z.add_hline(y=-z_thresh, line_dash="dot", line_color="green")
-        fig_z.update_layout(template="plotly_dark", height=400)
-        st.plotly_chart(fig_z, use_container_width=True)
-        
-    except Exception as e:
-        st.warning("Enter valid NSE tickers (e.g. RELIANCE.NS)")
-
-# --- TAB 3: INSTRUCTIONS ---
-with tab_instr:
-    st.header("NSE Pairs Trading Guide (March 2026)")
-    
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.markdown("### 🔍 SSD Model (Discovery)")
-        st.write("**Best for:** Cross-industry pairs (Auto vs Steel).")
-        st.write("**Rule:** If normalized distance > 2σ, buy the loser and sell the winner.")
-        st.write("**2026 Note:** Automatically uses TMPV/TMCV for Tata Motors.")
-    
-    with col_b:
-        st.markdown("### 📊 Cointegration (Execution)")
-        st.write("**Best for:** Identical stocks (HDFC vs ICICI).")
-        st.write("**Rule:** Uses Z-Score and Beta to determine exact hedge ratios.")
-        st.write("**Hedge Ratio:** If Beta is 0.5, sell 50 shares of S1 for every 100 of S2.")
-    
-    st.divider()
-    st.warning("**The Wait One Day Rule:** Always wait 24 hours after a signal appears to confirm it's not a temporary spike before placing your orders on the NSE.")
+                    # Entry Logic (2 Sigma)
+                    action_s1, action_s2 = "HOLD", "HOLD"
+                    color_s1, color_s2 = "gray", "gray"
